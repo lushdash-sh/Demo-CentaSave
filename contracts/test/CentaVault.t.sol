@@ -4,20 +4,23 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {CentaVault} from "../src/CentaVault.sol";
 import {CentaVaultFactory} from "../src/CentaVaultFactory.sol";
+import {MockINR} from "../src/MockINR.sol";
 
 contract CentaVaultTest is Test {
     CentaVault public vault;
     CentaVaultFactory public factory;
+    MockINR public token;
 
     address public owner = address(0x1111);
     address public relayer = address(0x2222);
     address public attacker = address(0x3333);
 
     function setUp() public {
-        vm.deal(owner, 10 ether);
-        vm.deal(relayer, 10 ether);
-
         factory = new CentaVaultFactory(relayer);
+        token = MockINR(factory.mINR());
+
+        token.mint(relayer, 1_000_000e18);
+        token.mint(owner, 1_000_000e18);
 
         vm.prank(owner);
         address vaultAddress = factory.createVault();
@@ -50,46 +53,64 @@ contract CentaVaultTest is Test {
     /* -------------------------------------------------------------------------- */
 
     function test_DepositRecordsCorrectly() public {
-        vm.prank(relayer);
-        vault.depositRoundUp{value: 0.003 ether}(12);
+        uint256 depositAmount = 3e18; // 12 rounds up by 3 mINR
 
-        assertEq(vault.totalSavedAmount(), 0.003 ether);
+        vm.prank(relayer);
+        token.approve(address(vault), depositAmount);
+        vm.prank(relayer);
+        vault.depositRoundUp(12, depositAmount);
+
+        assertEq(vault.totalSavedAmount(), depositAmount);
         assertEq(vault.totalDepositsCount(), 1);
         assertEq(vault.currentStreak(), 1);
         assertEq(vault.badgeTier(), 0); // Tier 0: Rookie
     }
 
     function test_StreakIncrementsAcrossConsecutiveDays() public {
+        uint256 depositAmount = 3e18; // 12 rounds up by 3 mINR
+
         // Day 1
         vm.prank(relayer);
-        vault.depositRoundUp{value: 0.001 ether}(12);
+        token.approve(address(vault), depositAmount);
+        vm.prank(relayer);
+        vault.depositRoundUp(12, depositAmount);
         assertEq(vault.currentStreak(), 1);
 
         // Day 2 (Advance time by 1 day)
         vm.warp(block.timestamp + 1 days);
         vm.prank(relayer);
-        vault.depositRoundUp{value: 0.001 ether}(12);
+        token.approve(address(vault), depositAmount);
+        vm.prank(relayer);
+        vault.depositRoundUp(12, depositAmount);
         assertEq(vault.currentStreak(), 2);
 
         // Day 3
         vm.warp(block.timestamp + 1 days);
         vm.prank(relayer);
-        vault.depositRoundUp{value: 0.001 ether}(12);
+        token.approve(address(vault), depositAmount);
+        vm.prank(relayer);
+        vault.depositRoundUp(12, depositAmount);
         assertEq(vault.currentStreak(), 3);
         assertEq(vault.badgeTier(), 1, "3-day streak should unlock Tier 1: Tapri Regular");
     }
 
     function test_StreakResetsAfterMissedDay() public {
+        uint256 depositAmount = 3e18; // 12 rounds up by 3 mINR
+
         // Day 1
         vm.prank(relayer);
-        vault.depositRoundUp{value: 0.001 ether}(12);
+        token.approve(address(vault), depositAmount);
+        vm.prank(relayer);
+        vault.depositRoundUp(12, depositAmount);
 
         // Fast forward 3 days without transactions
         vm.warp(block.timestamp + 3 days);
 
         // Next deposit resets streak to 1
         vm.prank(relayer);
-        vault.depositRoundUp{value: 0.001 ether}(12);
+        token.approve(address(vault), depositAmount);
+        vm.prank(relayer);
+        vault.depositRoundUp(12, depositAmount);
         assertEq(vault.currentStreak(), 1, "Streak must reset to 1 after missed days");
     }
 
@@ -98,8 +119,12 @@ contract CentaVaultTest is Test {
     /* -------------------------------------------------------------------------- */
 
     function test_OnlyOwnerCanWithdraw() public {
+        uint256 depositAmount = 3e18; // 12 rounds up by 3 mINR
+
         vm.prank(relayer);
-        vault.depositRoundUp{value: 1 ether}(12);
+        token.approve(address(vault), depositAmount);
+        vm.prank(relayer);
+        vault.depositRoundUp(12, depositAmount);
 
         // Attacker attempts withdrawal
         vm.prank(attacker);
@@ -107,10 +132,9 @@ contract CentaVaultTest is Test {
         vault.withdraw();
 
         // Legitimate owner withdraws
-        uint256 balanceBefore = owner.balance;
+        uint256 balanceBefore = token.balanceOf(owner);
         vm.prank(owner);
         vault.withdraw();
-        assertEq(owner.balance, balanceBefore + 1 ether);
-        assertEq(address(vault).balance, 0);
+        assertEq(token.balanceOf(owner), balanceBefore + depositAmount);
     }
 }

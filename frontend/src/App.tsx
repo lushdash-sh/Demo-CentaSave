@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Coffee,
   Zap,
@@ -9,8 +9,10 @@ import {
   ExternalLink,
   AlertTriangle,
   Sparkles,
+  Camera,
 } from "lucide-react";
 import confetti from "canvas-confetti";
+import { UPIScannerModal } from "./UPIScannerModal";
 
 interface SweepEvent {
   txHash: string;
@@ -22,7 +24,8 @@ interface SweepEvent {
   blockNumber: number;
 }
 
-const BACKEND_URL = "http://localhost:3001";
+// Dynamically use current hostname so phones on local WiFi connect seamlessly
+const BACKEND_URL = "";
 const DEMO_USER_ADDRESS = "0x1d4E38BE39939c60e8D513d7cb046Cb7179Fa8d1";
 
 export default function App() {
@@ -34,6 +37,7 @@ export default function App() {
   const [recentEvents, setRecentEvents] = useState<SweepEvent[]>([]);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [customSpend, setCustomSpend] = useState<string>("");
+  const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
 
   const badgeLabels = [
     { name: "Rookie Saver", color: "text-gray-400" },
@@ -45,7 +49,6 @@ export default function App() {
   useEffect(() => {
     async function initVault() {
       try {
-        // Load initial vault address & balance
         const res = await fetch(`${BACKEND_URL}/api/get-or-create-vault`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -55,7 +58,6 @@ export default function App() {
         setVaultAddress(data.vaultAddress);
         fetchVaultData(data.vaultAddress);
 
-        // Fetch past transaction history so stream isn't empty on refresh
         const historyRes = await fetch(`${BACKEND_URL}/api/history`);
         const history = await historyRes.json();
         if (Array.isArray(history) && history.length > 0) {
@@ -68,7 +70,6 @@ export default function App() {
 
     initVault();
 
-    // Setup live SSE listener
     const eventSource = new EventSource(`${BACKEND_URL}/api/events`);
     eventSource.onmessage = (e) => {
       try {
@@ -99,7 +100,6 @@ export default function App() {
     }
   }
 
-  // Trigger single UPI micro-sweep
   async function triggerPayment(merchantName: string, spendRupees: number) {
     if (!vaultAddress || isProcessing) return;
     setIsProcessing(true);
@@ -127,7 +127,6 @@ export default function App() {
     }
   }
 
-  // Stress-Test: Campus Rush
   async function triggerCampusRush() {
     if (!vaultAddress || isProcessing) return;
     setIsProcessing(true);
@@ -180,11 +179,11 @@ export default function App() {
       </header>
 
       {/* Main Workspace */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Left Column: Tapri Terminal */}
         <section className="lg:col-span-5 flex flex-col space-y-6">
-          <div className="bg-[#181726] border border-[#2A2845] rounded-2xl p-6 shadow-xl relative overflow-hidden">
+          <div className="bg-[#181726] border border-[#2A2845] rounded-2xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
             <div className="flex items-center justify-between pb-4 border-b border-[#2A2845]">
               <div className="flex items-center gap-2">
                 <Coffee className="w-5 h-5 text-amber-400" />
@@ -195,7 +194,19 @@ export default function App() {
               </span>
             </div>
 
-            <div className="mt-5 flex flex-col items-center justify-center p-4 bg-[#0F0E17] rounded-xl border border-[#2A2845]">
+            {/* SCAN REAL QR BUTTON */}
+            <div className="mt-4">
+              <button
+                onClick={() => setIsScannerOpen(true)}
+                className="w-full py-3 bg-[#836EF9] hover:bg-[#6B52ED] font-semibold rounded-xl text-white flex items-center justify-center gap-2 shadow-lg shadow-[#836EF9]/25 transition active:scale-[0.98]"
+              >
+                <Camera className="w-5 h-5" />
+                📸 Scan Real UPI QR with Phone Camera
+              </button>
+            </div>
+
+            {/* Static QR Terminal */}
+            <div className="mt-4 flex flex-col items-center justify-center p-4 bg-[#0F0E17] rounded-xl border border-[#2A2845]">
               <div className="w-36 h-36 bg-white p-2 rounded-lg flex items-center justify-center shadow-md">
                 <img
                   src="https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=upi://pay?pa=tapri@pune&pn=CentaSaveChai"
@@ -203,9 +214,10 @@ export default function App() {
                   className="w-full h-full"
                 />
               </div>
-              <p className="text-xs text-gray-400 mt-2 font-mono">Scan or tap quick-items below</p>
+              <p className="text-xs text-gray-400 mt-2 font-mono">Scan or tap quick orders below</p>
             </div>
 
+            {/* Tapri Orders Presets */}
             <div className="mt-5 space-y-2">
               <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tapri Orders</label>
               
@@ -260,10 +272,27 @@ export default function App() {
               </div>
             </div>
 
+            {/* Vault Balance Card */}
+            <div className="bg-[#181726] border border-[#2A2845] p-5 rounded-2xl">
+              <div className="flex items-center justify-between text-gray-400 text-xs">
+                <span>Vault Balance</span>
+                <TrendingUp className="w-4 h-4 text-[#836EF9]" />
+              </div>
+              <div className="mt-2 text-2xl font-bold font-mono text-white">
+                {totalSavedMON} <span className="text-xs font-sans text-[#836EF9]">mINR</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-xs font-mono">
+                <span className="text-emerald-400">
+                  ≈ ₹{parseFloat(totalSavedMON || "0").toFixed(0)} Saved
+                </span>
+                <span className="text-gray-400">{depositCount} Deposits</span>
+              </div>
+            </div>
+
             <div className="mt-4 flex gap-2">
               <input
                 type="number"
-                placeholder="Enter custom ₹ (e.g. 18)"
+                placeholder="Custom ₹ (e.g. 18)"
                 value={customSpend}
                 onChange={(e) => setCustomSpend(e.target.value)}
                 className="flex-1 bg-[#0F0E17] border border-[#2A2845] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#836EF9]"
@@ -276,11 +305,11 @@ export default function App() {
                 }}
                 className="px-4 py-2 bg-[#836EF9] hover:bg-[#6B52ED] disabled:opacity-50 text-white font-medium text-sm rounded-xl transition"
               >
-                Pay & Sweep
+                Pay & Save
               </button>
             </div>
 
-            <div className="mt-6 pt-4 border-t border-[#2A2845]">
+            <div className="mt-5 pt-4 border-t border-[#2A2845]">
               <button
                 disabled={isProcessing}
                 onClick={triggerCampusRush}
@@ -351,7 +380,7 @@ export default function App() {
               {recentEvents.length === 0 ? (
                 <div className="h-44 flex flex-col items-center justify-center text-gray-500 text-sm">
                   <Coffee className="w-8 h-8 mb-2 stroke-1 opacity-50" />
-                  Tap an order on the left to fire your first real-time transaction!
+                  Tap an order on the left or scan a QR to fire a transaction!
                 </div>
               ) : (
                 recentEvents.map((evt, idx) => (
@@ -425,6 +454,13 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* UPI QR SCANNER MODAL */}
+      <UPIScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onExecuteSweep={(merchant, spend) => triggerPayment(merchant, spend)}
+      />
     </div>
   );
 }

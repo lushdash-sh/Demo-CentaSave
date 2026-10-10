@@ -1,133 +1,104 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {CentaYieldVault} from "./CentaYieldVault.sol";
+
 contract CentaVault {
-    address public immutable owner;
-    address public immutable relayer;
+    address public owner;
+    address public relayer;
+    IERC20 public mINR;
+    CentaYieldVault public yieldVault;
 
-    // Policy parameters
-    uint256 public constant MIN_SPEND_FLOOR = 5;      // Ignore transactions < ₹5
-    uint256 public constant BASE_BRACKET_LIMIT = 25;   // Below ₹25 -> Round to ₹5, Above -> Round to ₹10
-
-    // Gamification & Metrics
+    uint256 public totalSavedAmount;
     uint256 public totalDepositsCount;
-    uint256 public totalSavedAmount; // In native wei/MON
     uint256 public currentStreak;
     uint256 public lastDepositDay;
-    uint256 public badgeTier; // 0: Rookie, 1: Tapri Regular, 2: Cutting Connoisseur, 3: Chai Sovereign
+    uint256 public badgeTier; // 0: Rookie, 1: Tapri Regular, 2: Connoisseur, 3: Sovereign
 
-    // Events for UI indexing
-    event MicroDepositExecuted(
-        address indexed user,
-        uint256 spendRupees,
-        uint256 savedRupees,
-        uint256 valueWei,
-        uint256 streak,
-        uint256 badgeTier,
-        uint256 timestamp
-    );
-    event BadgeTierUnlocked(address indexed user, uint256 newTier, string title);
-    event FundsWithdrawn(address indexed owner, uint256 amount);
-
-    modifier onlyAuthorized() {
-        require(msg.sender == owner || msg.sender == relayer, "Unauthorized");
-        _;
-    }
+    event RoundUpDeposited(address indexed user, uint256 spendRupees, uint256 savedRupees, uint256 timestamp);
+    event Withdrawn(address indexed user, uint256 amount);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Only owner");
         _;
     }
 
-    constructor(address _owner, address _relayer) {
-        require(_owner != address(0), "Zero address owner");
-        require(_relayer != address(0), "Zero address relayer");
+    modifier onlyRelayer() {
+        require(msg.sender == relayer || msg.sender == owner, "Only relayer or owner");
+        _;
+    }
+
+    constructor(address _owner, address _relayer, address _mINR, address _yieldVault) {
         owner = _owner;
         relayer = _relayer;
+        mINR = IERC20(_mINR);
+        yieldVault = CentaYieldVault(_yieldVault);
         lastDepositDay = type(uint256).max;
     }
 
-    /// @notice Calculates the required round-up in whole rupees
-    /// @param spendRupees The original payment amount (e.g. ₹12)
-    /// @return deltaRupees The amount of loose change to sweep (e.g. ₹3)
+    // Dynamic Round-up Calculation Engine
     function calculateRoundUp(uint256 spendRupees) public pure returns (uint256 deltaRupees) {
-        if (spendRupees < MIN_SPEND_FLOOR) {
-            return 0;
-        }
+        if (spendRupees < 5) return 0; // Floor threshold
 
-        uint256 multiple = spendRupees <= BASE_BRACKET_LIMIT ? 5 : 10;
-        uint256 remainder = spendRupees % multiple;
+        uint256 roundMultiple = (spendRupees <= 25) ? 5 : 10;
+        uint256 remainder = spendRupees % roundMultiple;
 
-        if (remainder == 0) {
-            return 0;
-        }
-
-        return multiple - remainder;
+        if (remainder == 0) return 0;
+        return roundMultiple - remainder;
     }
 
-    /// @notice Sweep micro-change into the vault
-    /// @param spendRupees Original fiat spend amount for metrics calculation
-    function depositRoundUp(uint256 spendRupees) external payable onlyAuthorized {
-        require(msg.value > 0, "No value sent");
+    // Deposit Round-up using mINR stablecoin
+    function depositRoundUp(uint256 spendRupees, uint256 amountMlnr) external onlyRelayer {
+        uint256 delta = calculateRoundUp(spendRupees);
+        require(delta > 0, "No round-up required");
+        require(amountMlnr >= delta * 10 ** 18, "Insufficient mINR attached");
 
-        uint256 deltaRupees = calculateRoundUp(spendRupees);
-        totalSavedAmount += msg.value;
+        // Pull mINR from relayer / user allowance
+        bool success = mINR.transferFrom(msg.sender, address(this), amountMlnr);
+        require(success, "mINR transfer failed");
+
+        // Approve and deposit into yield vault
+        mINR.approve(address(yieldVault), amountMlnr);
+        yieldVault.deposit(amountMlnr, address(this));
+
+        totalSavedAmount += amountMlnr;
         totalDepositsCount += 1;
 
-        // Daily Streak Evaluation (86400 seconds per day)
+        // Streak & Badge Logic
         uint256 today = block.timestamp / 1 days;
         if (lastDepositDay == type(uint256).max) {
             currentStreak = 1;
         } else if (today == lastDepositDay + 1) {
             currentStreak += 1;
         } else if (today > lastDepositDay + 1) {
-            currentStreak = 1;
+            currentStreak = 1; // Reset streak if day missed
         }
         lastDepositDay = today;
 
-        _updateBadgeTier();
-
-        emit MicroDepositExecuted(
-            owner,
-            spendRupees,
-            deltaRupees,
-            msg.value,
-            currentStreak,
-            badgeTier,
-            block.timestamp
-        );
-    }
-
-    function _updateBadgeTier() internal {
-        uint256 previousTier = badgeTier;
-
+        // Update Badge Tier
         if (currentStreak >= 14 || totalDepositsCount >= 30) {
-            badgeTier = 3;
+            badgeTier = 3; // Chai Sovereign
         } else if (currentStreak >= 7 || totalDepositsCount >= 15) {
-            badgeTier = 2;
+            badgeTier = 2; // Cutting Connoisseur
         } else if (currentStreak >= 3 || totalDepositsCount >= 5) {
-            badgeTier = 1;
+            badgeTier = 1; // Tapri Regular
+        } else {
+            badgeTier = 0; // Rookie
         }
 
-        if (badgeTier > previousTier) {
-            string memory title = badgeTier == 1 ? "Tapri Regular" : (badgeTier == 2 ? "Cutting Connoisseur" : "Chai Sovereign");
-            emit BadgeTierUnlocked(owner, badgeTier, title);
-        }
+        emit RoundUpDeposited(owner, spendRupees, delta, block.timestamp);
     }
 
-    /// @notice Withdraw accumulated savings back to user wallet
+    // Non-custodial withdrawal back to owner
     function withdraw() external onlyOwner {
-        uint256 amount = address(this).balance;
-        require(amount > 0, "Vault empty");
-
-        // Checks-Effects-Interactions: Emit event BEFORE external value transfer
-        emit FundsWithdrawn(owner, amount);
-
-        (bool success, ) = payable(owner).call{value: amount}("");
-        require(success, "Transfer failed");
-    }
-
-    receive() external payable {
-        totalSavedAmount += msg.value;
+        uint256 shares = yieldVault.balanceOf(address(this));
+        require(shares > 0, "No balance to withdraw");
+        
+        // Redeem shares for underlying mINR from yield vault
+        yieldVault.redeem(shares, owner, address(this));
+        
+        emit Withdrawn(owner, totalSavedAmount);
+        totalSavedAmount = 0;
     }
 }
